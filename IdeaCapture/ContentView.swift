@@ -1,21 +1,139 @@
-//
-//  ContentView.swift
-//  IdeaCapture
-//
-//  Created by Shota on 2025/11/06.
-//
-
 import SwiftUI
 
 struct ContentView: View {
+    @StateObject private var viewModel = RecorderViewModel()
+    @State private var showPermissionAlert = false
+
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
+        ZStack {
+            // Background
+            Color.black.ignoresSafeArea()
+
+            if viewModel.sessionEnded {
+                SessionEndView(
+                    transcript: viewModel.transcript,
+                    onDismiss: {
+                        viewModel.sessionEnded = false
+                        viewModel.transcript = ""
+                    }
+                )
+            } else {
+                VStack(spacing: 40) {
+                    Spacer()
+
+                    // Waveform visualization
+                    WaveformView(
+                        audioLevel: viewModel.audioLevel,
+                        isRecording: viewModel.isRecording
+                    )
+                    .frame(height: 200)
+                    .padding(.horizontal, 30)
+
+                    // Microphone indicator
+                    Button {
+                        if viewModel.isRecording {
+                            viewModel.stopRecording()
+                        } else if viewModel.permissionGranted {
+                            viewModel.startRecording()
+                        } else {
+                            showPermissionAlert = true
+                        }
+                    } label: {
+                        ZStack {
+                            if viewModel.isRecording {
+                                Circle()
+                                    .fill(Color.red.opacity(0.3))
+                                    .frame(width: 120, height: 120)
+                                    .scaleEffect(viewModel.audioLevel > 0.1 ? 1.2 : 1.0)
+                                    .animation(.easeInOut(duration: 0.2), value: viewModel.audioLevel)
+                            }
+
+                            Circle()
+                                .fill(viewModel.isRecording ? Color.red : Color.gray)
+                                .frame(width: 80, height: 80)
+
+                            Image(systemName: "mic.fill")
+                                .font(.system(size: 35))
+                                .foregroundColor(.white)
+                        }
+                    }
+                    .buttonStyle(.plain)
+
+                    // Status text
+                    Text(viewModel.isRecording ? "Recording..." : "Tap to Start")
+                        .font(.system(.title2, design: .rounded))
+                        .fontWeight(.semibold)
+                        .foregroundColor(.white.opacity(0.9))
+
+                    // Live transcription
+                    if viewModel.isRecording && !viewModel.transcript.isEmpty {
+                        ScrollView {
+                            Text(viewModel.transcript)
+                                .font(.system(.body, design: .rounded))
+                                .foregroundColor(.white.opacity(0.7))
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 30)
+                                .frame(maxWidth: .infinity)
+                        }
+                        .frame(maxHeight: 150)
+                    }
+
+                    Spacer()
+
+                    // Control buttons
+                    HStack(spacing: 40) {
+                        if viewModel.isRecording {
+                            Button(action: {
+                                viewModel.stopRecording()
+                            }) {
+                                VStack {
+                                    Image(systemName: "stop.fill")
+                                        .font(.system(size: 30))
+                                    Text("Stop")
+                                        .font(.system(.caption, design: .rounded))
+                                }
+                                .foregroundColor(.white)
+                            }
+                        } else {
+                            Button(action: {
+                                if viewModel.permissionGranted {
+                                    viewModel.startRecording()
+                                } else {
+                                    showPermissionAlert = true
+                                }
+                            }) {
+                                VStack {
+                                    Image(systemName: "record.circle")
+                                        .font(.system(size: 30))
+                                    Text("Record")
+                                        .font(.system(.caption, design: .rounded))
+                                }
+                                .foregroundColor(.red)
+                            }
+                        }
+                    }
+                    .padding(.bottom, 50)
+                }
+            }
         }
-        .padding()
+        .task {
+            await viewModel.requestPermissions()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .startRecording)) { _ in
+            if viewModel.permissionGranted && !viewModel.isRecording {
+                viewModel.startRecording()
+            }
+        }
+        .alert("Permissions Required", isPresented: $showPermissionAlert) {
+            Button("OK") { }
+            Button("Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+        } message: {
+            Text("IdeaCapture needs access to your microphone and speech recognition to record your ideas. Please enable these permissions in Settings.")
+        }
     }
 }
 
