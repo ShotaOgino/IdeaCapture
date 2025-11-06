@@ -31,28 +31,29 @@ struct ContentView: View {
                     .padding(.horizontal, 30)
 
                     // Microphone indicator
-                    Button {
-                        toggleRecording()
-                    } label: {
-                        ZStack {
-                            if viewModel.isRecording {
-                                Circle()
-                                    .fill(Color.red.opacity(0.3))
-                                    .frame(width: 120, height: 120)
-                                    .scaleEffect(viewModel.audioLevel > 0.1 ? 1.2 : 1.0)
-                                    .animation(.easeInOut(duration: 0.2), value: viewModel.audioLevel)
-                            }
-
+                    ZStack {
+                        if viewModel.isRecording {
                             Circle()
-                                .fill(viewModel.isRecording ? Color.red : Color.gray)
-                                .frame(width: 80, height: 80)
-
-                            Image(systemName: "mic.fill")
-                                .font(.system(size: 35))
-                                .foregroundColor(.white)
+                                .fill(Color.red.opacity(0.3))
+                                .frame(width: 120, height: 120)
+                                .scaleEffect(viewModel.audioLevel > 0.1 ? 1.2 : 1.0)
+                                .animation(.easeInOut(duration: 0.2), value: viewModel.audioLevel)
                         }
+
+                        Circle()
+                            .fill(viewModel.isRecording ? Color.red : Color.gray)
+                            .frame(width: 80, height: 80)
+
+                        Image(systemName: "mic.fill")
+                            .font(.system(size: 35))
+                            .foregroundColor(.white)
                     }
-                    .buttonStyle(.plain)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(viewModel.isRecording ? "録音を停止" : "録音を開始")
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityAction {
+                        toggleRecording()
+                    }
 
                     // Status text
                     Text(viewModel.isRecording ? "録音中..." : "タップして録音開始")
@@ -109,10 +110,24 @@ struct ContentView: View {
         }
         .task {
             await viewModel.requestPermissions()
+            if RecorderViewModel.consumeGlobalStartRequest() {
+                if viewModel.permissionGranted && !viewModel.isRecording {
+                    viewModel.startRecording()
+                } else if !viewModel.permissionGranted {
+                    showPermissionAlert = true
+                    RecorderViewModel.scheduleGlobalStartRequest()
+                }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .startRecording)) { _ in
+            let pending = RecorderViewModel.consumeGlobalStartRequest()
             if viewModel.permissionGranted && !viewModel.isRecording {
-                viewModel.startRecording()
+                if pending {
+                    viewModel.startRecording()
+                }
+            } else if !viewModel.permissionGranted && pending {
+                RecorderViewModel.scheduleGlobalStartRequest()
+                showPermissionAlert = true
             }
         }
         .alert("権限が必要です", isPresented: $showPermissionAlert) {
@@ -168,9 +183,6 @@ struct ContentView: View {
                             DragGesture(minimumDistance: 0)
                                 .onEnded { _ in toggleRecording() }
                         )
-                        .onTapGesture {
-                            toggleRecording()
-                        }
                 }
             }
             .allowsHitTesting(true)

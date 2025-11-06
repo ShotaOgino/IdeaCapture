@@ -16,10 +16,25 @@
 	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>IdeaCapture</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>ideacapture</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>IdeaCapture がアイデアを録音するためにはマイクへのアクセスが必要です。</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>IdeaCapture が録音した音声を文字起こしするためには音声認識へのアクセスが必要です。</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -46,9 +61,5 @@
 		<string>UIInterfaceOrientationPortrait</string>
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 	</array>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>IdeaCapture がアイデアを録音するためにはマイクへのアクセスが必要です。</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>IdeaCapture が録音した音声を文字起こしするためには音声認識へのアクセスが必要です。</string>
 </dict>
 </plist>

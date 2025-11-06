@@ -9,7 +9,8 @@ struct StartRecordingIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        // Post notification to start recording
+        RecorderViewModel.scheduleGlobalStartRequest()
+
         NotificationCenter.default.post(name: .startRecording, object: nil)
 
         return .result()
