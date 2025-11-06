@@ -168,6 +168,9 @@ struct ContentView: View {
                             DragGesture(minimumDistance: 0)
                                 .onEnded { _ in toggleRecording() }
                         )
+                        .onTapGesture {
+                            toggleRecording()
+                        }
                 }
             }
             .allowsHitTesting(true)

@@ -37,7 +37,8 @@ final class RecorderViewModel: ObservableObject {
     private var hasActiveTap = false
 
     private let historyURL: URL
-    private var hasSavedTranscriptThisSession = false
+    private var currentSessionEntryID: UUID?
+    private var sessionAccumulatedTranscript: String = ""
 
     init() {
         let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
@@ -74,7 +75,8 @@ final class RecorderViewModel: ObservableObject {
 
         transcript = ""
         sessionEnded = false
-        hasSavedTranscriptThisSession = false
+        currentSessionEntryID = nil
+        sessionAccumulatedTranscript = ""
 
         let audioSession = AVAudioSession.sharedInstance()
         do {
@@ -122,6 +124,10 @@ final class RecorderViewModel: ObservableObject {
             if let result = result {
                 Task { @MainActor in
                     self.transcript = result.bestTranscription.formattedString
+                    self.recordCurrentTranscriptIfNeeded()
+                    if result.isFinal {
+                        self.recordCurrentTranscriptIfNeeded()
+                    }
 
                     if self.containsFinishKeyword(self.transcript) {
                         self.stopRecording()
@@ -149,6 +155,8 @@ final class RecorderViewModel: ObservableObject {
         isRecording = false
 
         recordCurrentTranscriptIfNeeded()
+        currentSessionEntryID = nil
+        sessionAccumulatedTranscript = ""
 
         teardownRecordingResources(deleteTemporaryFile: false)
 
@@ -166,6 +174,8 @@ final class RecorderViewModel: ObservableObject {
         isRecording = false
 
         recordCurrentTranscriptIfNeeded()
+        currentSessionEntryID = nil
+        sessionAccumulatedTranscript = ""
         teardownRecordingResources(deleteTemporaryFile: true)
 
         audioLevel = 0.0
@@ -249,18 +259,31 @@ final class RecorderViewModel: ObservableObject {
 
     private func recordCurrentTranscriptIfNeeded() {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !hasSavedTranscriptThisSession else { return }
+        guard !trimmed.isEmpty else { return }
 
-        let entry = TranscriptEntry(
-            id: UUID(),
-            createdAt: Date(),
-            text: trimmed,
-            isRead: false
-        )
+        let mergedTranscript = mergeTranscript(with: trimmed)
+        guard mergedTranscript != sessionAccumulatedTranscript else { return }
 
-        history.insert(entry, at: 0)
+        sessionAccumulatedTranscript = mergedTranscript
+
+        if let entryID = currentSessionEntryID,
+           let index = history.firstIndex(where: { $0.id == entryID }) {
+            var updatedEntry = history.remove(at: index)
+            updatedEntry.text = mergedTranscript
+            updatedEntry.isRead = false
+            history.insert(updatedEntry, at: 0)
+        } else {
+            let entry = TranscriptEntry(
+                id: UUID(),
+                createdAt: Date(),
+                text: mergedTranscript,
+                isRead: false
+            )
+            history.insert(entry, at: 0)
+            currentSessionEntryID = entry.id
+        }
+
         persistHistory()
-        hasSavedTranscriptThisSession = true
     }
 
     private func containsFinishKeyword(_ text: String) -> Bool {
@@ -274,6 +297,50 @@ final class RecorderViewModel: ObservableObject {
         ]
 
         return finishKeywords.contains { lowercased.contains($0) }
+    }
+
+    private func mergeTranscript(with newText: String) -> String {
+        let trimmedNewText = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedNewText.isEmpty else { return sessionAccumulatedTranscript }
+
+        let current = sessionAccumulatedTranscript
+        if current.isEmpty {
+            return trimmedNewText
+        }
+
+        if trimmedNewText == current {
+            return current
+        }
+
+        let commonPrefix = current.commonPrefix(with: trimmedNewText)
+
+        if commonPrefix.count == current.count && trimmedNewText.count >= current.count {
+            // New text extends the existing transcript
+            return trimmedNewText
+        }
+
+        if commonPrefix.count == trimmedNewText.count {
+            // New text is entirely contained at the start of the existing transcript
+            return current
+        }
+
+        if trimmedNewText.contains(current) {
+            // New text already includes the full session transcript
+            return trimmedNewText
+        }
+
+        if current.contains(trimmedNewText) {
+            // Existing transcript already contains the new fragment
+            return current
+        }
+
+        if current.hasSuffix(trimmedNewText) {
+            return current
+        }
+
+        let needsSeparator = !current.hasSuffix("\n") && !current.isEmpty
+        let separator = needsSeparator ? "\n" : ""
+        return current + separator + trimmedNewText
     }
 
     private func setupAudioFile() {
