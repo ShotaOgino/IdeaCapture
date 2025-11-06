@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var viewModel = RecorderViewModel()
     @State private var showPermissionAlert = false
+    @State private var showingHistory = false
 
     var body: some View {
         ZStack {
@@ -31,13 +32,7 @@ struct ContentView: View {
 
                     // Microphone indicator
                     Button {
-                        if viewModel.isRecording {
-                            viewModel.stopRecording()
-                        } else if viewModel.permissionGranted {
-                            viewModel.startRecording()
-                        } else {
-                            showPermissionAlert = true
-                        }
+                        toggleRecording()
                     } label: {
                         ZStack {
                             if viewModel.isRecording {
@@ -96,11 +91,7 @@ struct ContentView: View {
                             }
                         } else {
                             Button(action: {
-                                if viewModel.permissionGranted {
-                                    viewModel.startRecording()
-                                } else {
-                                    showPermissionAlert = true
-                                }
+                                toggleRecording()
                             }) {
                                 VStack {
                                     Image(systemName: "record.circle")
@@ -134,9 +125,68 @@ struct ContentView: View {
         } message: {
             Text("IdeaCapture がアイデアを録音・文字起こしするにはマイクと音声認識へのアクセスが必要です。設定でこれらの権限を有効にしてください。")
         }
+        .overlay(alignment: .topTrailing) {
+            Button {
+                showingHistory = true
+            } label: {
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: "tray.full")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(12)
+                        .background(Color.white.opacity(0.12))
+                        .clipShape(Circle())
+
+                    if viewModel.unreadCount > 0 {
+                        Text("\(min(viewModel.unreadCount, 99))")
+                            .font(.caption2)
+                            .fontWeight(.bold)
+                            .foregroundColor(.white)
+                            .padding(5)
+                            .background(Circle().fill(Color.red))
+                            .offset(x: 10, y: -10)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 24)
+            .padding(.top, 24)
+        }
+        .sheet(isPresented: $showingHistory) {
+            HistoryView(viewModel: viewModel)
+        }
+        .overlay {
+            GeometryReader { geometry in
+                let height = geometry.size.height * 0.6
+
+                VStack {
+                    Spacer()
+                    Color.clear
+                        .frame(width: geometry.size.width, height: height)
+                        .contentShape(Rectangle())
+                        .highPriorityGesture(
+                            DragGesture(minimumDistance: 0)
+                                .onEnded { _ in toggleRecording() }
+                        )
+                }
+            }
+            .allowsHitTesting(true)
+        }
     }
 }
 
 #Preview {
     ContentView()
+}
+
+private extension ContentView {
+    func toggleRecording() {
+        if viewModel.isRecording {
+            viewModel.stopRecording()
+        } else if viewModel.permissionGranted {
+            viewModel.startRecording()
+        } else {
+            showPermissionAlert = true
+        }
+    }
 }

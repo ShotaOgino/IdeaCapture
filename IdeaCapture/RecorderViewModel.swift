@@ -2,6 +2,18 @@ import SwiftUI
 import AVFoundation
 import Speech
 
+struct TranscriptEntry: Identifiable, Codable, Hashable {
+    let id: UUID
+    let createdAt: Date
+    var text: String
+    var isRead: Bool
+
+    var previewText: String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "（空の文字起こし）" : trimmed
+    }
+}
+
 @MainActor
 final class RecorderViewModel: ObservableObject {
     @Published var transcript: String = ""
@@ -9,6 +21,11 @@ final class RecorderViewModel: ObservableObject {
     @Published var sessionEnded = false
     @Published var audioLevel: Float = 0.0
     @Published var permissionGranted = false
+    @Published private(set) var history: [TranscriptEntry] = []
+
+    var unreadCount: Int {
+        history.lazy.filter { !$0.isRead }.count
+    }
 
     private let audioEngine = AVAudioEngine()
     private var recognizer: SFSpeechRecognizer?
@@ -19,29 +36,24 @@ final class RecorderViewModel: ObservableObject {
     private var levelTimer: Timer?
     private var hasActiveTap = false
 
-    init() {
-        // Initialize recognizer for Japanese locale
-        recognizer = SFSpeechRecognizer(locale: Locale(identifier: "ja-JP"))
-        recognizer?.defaultTaskHint = .dictation
+    private let historyURL: URL
+    private var hasSavedTranscriptThisSession = false
 
-        if let recognizer = recognizer {
-            if recognizer.supportsOnDeviceRecognition {
-                print("オンデバイス音声認識を利用できます")
-            }
-        } else {
-            print("日本語の音声認識がサポートされていません")
-        }
+    init() {
+        let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
+        historyURL = documentsURL.appendingPathComponent("transcripts.json")
+
+        loadHistory()
+        configureRecognizer()
     }
 
     func requestPermissions() async {
-        // Request microphone permission
         let micStatus = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             AVAudioSession.sharedInstance().requestRecordPermission { granted in
                 continuation.resume(returning: granted)
             }
         }
 
-        // Request speech recognition permission
         let speechStatus = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             SFSpeechRecognizer.requestAuthorization { status in
                 continuation.resume(returning: status == .authorized)
@@ -52,17 +64,18 @@ final class RecorderViewModel: ObservableObject {
     }
 
     func startRecording() {
+        recordCurrentTranscriptIfNeeded()
+
         guard permissionGranted else { return }
         guard let recognizer = recognizer, recognizer.isAvailable else {
             print("音声認識を利用できません")
             return
         }
 
-        // Reset state
         transcript = ""
         sessionEnded = false
+        hasSavedTranscriptThisSession = false
 
-        // Configure audio session
         let audioSession = AVAudioSession.sharedInstance()
         do {
             try audioSession.setCategory(.record, mode: .measurement, options: .duckOthers)
@@ -72,34 +85,27 @@ final class RecorderViewModel: ObservableObject {
             return
         }
 
-        // Create recognition request
         request = SFSpeechAudioBufferRecognitionRequest()
         guard let request = request else { return }
 
-        // Enable on-device recognition
+        request.shouldReportPartialResults = true
+
         if recognizer.supportsOnDeviceRecognition {
             request.requiresOnDeviceRecognition = true
         }
 
-        // Set up audio file for temporary storage
         setupAudioFile()
 
         let inputNode = audioEngine.inputNode
         let recordingFormat = inputNode.outputFormat(forBus: 0)
 
-        // Install tap on audio input
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in
             request.append(buffer)
-
-            // Write to temporary audio file
             try? self?.audioFile?.write(from: buffer)
-
-            // Update audio level for visualization
             self?.updateAudioLevel(buffer: buffer)
         }
         hasActiveTap = true
 
-        // Start audio engine
         audioEngine.prepare()
         do {
             try audioEngine.start()
@@ -110,7 +116,6 @@ final class RecorderViewModel: ObservableObject {
             return
         }
 
-        // Start recognition task
         task = recognizer.recognitionTask(with: request) { [weak self] result, error in
             guard let self = self else { return }
 
@@ -118,7 +123,6 @@ final class RecorderViewModel: ObservableObject {
                 Task { @MainActor in
                     self.transcript = result.bestTranscription.formattedString
 
-                    // Check for finish keyword
                     if self.containsFinishKeyword(self.transcript) {
                         self.stopRecording()
                         self.sessionEnded = true
@@ -133,14 +137,18 @@ final class RecorderViewModel: ObservableObject {
             }
         }
 
-        // Start audio level monitoring
         startLevelMonitoring()
     }
 
     func stopRecording() {
-        guard isRecording || hasActiveTap || task != nil else { return }
+        guard isRecording || hasActiveTap || task != nil else {
+            recordCurrentTranscriptIfNeeded()
+            return
+        }
 
         isRecording = false
+
+        recordCurrentTranscriptIfNeeded()
 
         teardownRecordingResources(deleteTemporaryFile: false)
 
@@ -149,6 +157,7 @@ final class RecorderViewModel: ObservableObject {
 
     @MainActor func cleanup() {
         guard isRecording || hasActiveTap || task != nil else {
+            recordCurrentTranscriptIfNeeded()
             teardownRecordingResources(deleteTemporaryFile: true)
             audioLevel = 0.0
             return
@@ -156,15 +165,107 @@ final class RecorderViewModel: ObservableObject {
 
         isRecording = false
 
+        recordCurrentTranscriptIfNeeded()
         teardownRecordingResources(deleteTemporaryFile: true)
 
         audioLevel = 0.0
     }
 
+    func markAllAsRead() {
+        var updated = false
+        for index in history.indices where !history[index].isRead {
+            history[index].isRead = true
+            updated = true
+        }
+        if updated {
+            persistHistory()
+        }
+    }
+
+    func markAsRead(_ entry: TranscriptEntry) {
+        guard let index = history.firstIndex(where: { $0.id == entry.id }) else { return }
+        if !history[index].isRead {
+            history[index].isRead = true
+            persistHistory()
+        }
+    }
+
+    func toggleReadState(for entry: TranscriptEntry) {
+        guard let index = history.firstIndex(where: { $0.id == entry.id }) else { return }
+        history[index].isRead.toggle()
+        persistHistory()
+    }
+
+    func deleteEntries(at offsets: IndexSet) {
+        history.remove(atOffsets: offsets)
+        persistHistory()
+    }
+
+    func deleteEntry(_ entry: TranscriptEntry) {
+        guard let index = history.firstIndex(where: { $0.id == entry.id }) else { return }
+        history.remove(at: index)
+        persistHistory()
+    }
+
+    func entry(with id: UUID) -> TranscriptEntry? {
+        history.first(where: { $0.id == id })
+    }
+
+    private func configureRecognizer() {
+        recognizer = SFSpeechRecognizer(locale: Locale(identifier: "ja-JP"))
+        recognizer?.defaultTaskHint = .dictation
+
+        if let recognizer = recognizer {
+            if recognizer.supportsOnDeviceRecognition {
+                print("オンデバイス音声認識を利用できます")
+            }
+        } else {
+            print("日本語の音声認識がサポートされていません")
+        }
+    }
+
+    private func loadHistory() {
+        do {
+            let data = try Data(contentsOf: historyURL)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let decoded = try decoder.decode([TranscriptEntry].self, from: data)
+            history = decoded.sorted(by: { $0.createdAt > $1.createdAt })
+        } catch {
+            history = []
+        }
+    }
+
+    private func persistHistory() {
+        do {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            let data = try encoder.encode(history)
+            try data.write(to: historyURL, options: [.atomic])
+        } catch {
+            print("履歴の保存に失敗しました: \(error)")
+        }
+    }
+
+    private func recordCurrentTranscriptIfNeeded() {
+        let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !hasSavedTranscriptThisSession else { return }
+
+        let entry = TranscriptEntry(
+            id: UUID(),
+            createdAt: Date(),
+            text: trimmed,
+            isRead: false
+        )
+
+        history.insert(entry, at: 0)
+        persistHistory()
+        hasSavedTranscriptThisSession = true
+    }
+
     private func containsFinishKeyword(_ text: String) -> Bool {
         let lowercased = text.lowercased()
 
-        // Check for various finish keywords in different languages
         let finishKeywords = [
             "finish", "finished",
             "終わり", "おわり", "終了",
@@ -202,8 +303,8 @@ final class RecorderViewModel: ObservableObject {
         let channelDataArray = stride(from: 0, to: Int(buffer.frameLength), by: buffer.stride).map { channelDataValue[$0] }
 
         let rms = sqrt(channelDataArray.map { $0 * $0 }.reduce(0, +) / Float(buffer.frameLength))
-        let avgPower = 20 * log10(rms)
-        let normalizedLevel = max(0, min(1, (avgPower + 50) / 50)) // Normalize to 0-1
+        let avgPower = 20 * log10(max(rms, 0.000_000_1))
+        let normalizedLevel = max(0, min(1, (avgPower + 50) / 50))
 
         Task { @MainActor in
             self.audioLevel = normalizedLevel
@@ -213,6 +314,11 @@ final class RecorderViewModel: ObservableObject {
     private func startLevelMonitoring() {
         levelTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
             // Audio level is updated in updateAudioLevel
+            guard let self else { return }
+            if !self.isRecording {
+                self.levelTimer?.invalidate()
+                self.levelTimer = nil
+            }
         }
     }
 
@@ -248,7 +354,8 @@ final class RecorderViewModel: ObservableObject {
     }
 
     deinit {
-        MainActor.assumeIsolated { [self] in
+        Task { @MainActor [self] in
+            recordCurrentTranscriptIfNeeded()
             teardownRecordingResources(deleteTemporaryFile: true)
         }
     }
