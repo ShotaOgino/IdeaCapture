@@ -60,7 +60,7 @@ struct ContentView: View {
                     .buttonStyle(.plain)
 
                     // Status text
-                    Text(viewModel.isRecording ? "Recording..." : "Tap to Start")
+                    Text(viewModel.isRecording ? "録音中..." : "タップして録音開始")
                         .font(.system(.title2, design: .rounded))
                         .fontWeight(.semibold)
                         .foregroundColor(.white.opacity(0.9))
@@ -89,7 +89,7 @@ struct ContentView: View {
                                 VStack {
                                     Image(systemName: "stop.fill")
                                         .font(.system(size: 30))
-                                    Text("Stop")
+                                    Text("停止")
                                         .font(.system(.caption, design: .rounded))
                                 }
                                 .foregroundColor(.white)
@@ -105,7 +105,7 @@ struct ContentView: View {
                                 VStack {
                                     Image(systemName: "record.circle")
                                         .font(.system(size: 30))
-                                    Text("Record")
+                                    Text("録音")
                                         .font(.system(.caption, design: .rounded))
                                 }
                                 .foregroundColor(.red)
@@ -124,15 +124,15 @@ struct ContentView: View {
                 viewModel.startRecording()
             }
         }
-        .alert("Permissions Required", isPresented: $showPermissionAlert) {
-            Button("OK") { }
-            Button("Settings") {
+        .alert("権限が必要です", isPresented: $showPermissionAlert) {
+            Button("閉じる") { }
+            Button("設定を開く") {
                 if let url = URL(string: UIApplication.openSettingsURLString) {
                     UIApplication.shared.open(url)
                 }
             }
         } message: {
-            Text("IdeaCapture needs access to your microphone and speech recognition to record your ideas. Please enable these permissions in Settings.")
+            Text("IdeaCapture がアイデアを録音・文字起こしするにはマイクと音声認識へのアクセスが必要です。設定でこれらの権限を有効にしてください。")
         }
     }
 }

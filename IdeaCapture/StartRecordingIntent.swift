@@ -2,8 +2,8 @@ import AppIntents
 import SwiftUI
 
 struct StartRecordingIntent: AppIntent {
-    static var title: LocalizedStringResource = "Start IdeaCapture"
-    static var description = IntentDescription("Start recording your ideas with IdeaCapture")
+    static var title: LocalizedStringResource = "IdeaCapture を開始"
+    static var description = IntentDescription("IdeaCapture でアイデアの録音を開始します。")
 
     static var openAppWhenRun: Bool = true
 
@@ -21,12 +21,12 @@ struct IdeaCaptureShortcuts: AppShortcutsProvider {
         AppShortcut(
             intent: StartRecordingIntent(),
             phrases: [
-                "Start \(.applicationName)",
-                "Start recording with \(.applicationName)",
-                "Record idea with \(.applicationName)",
-                "Capture idea with \(.applicationName)"
+                "\(.applicationName) を起動",
+                "\(.applicationName) で録音を開始",
+                "アイデアを \(.applicationName) で録音",
+                "\(.applicationName) で録音して"
             ],
-            shortTitle: "Start Recording",
+            shortTitle: "録音を開始",
             systemImageName: "mic.fill"
         )
     }

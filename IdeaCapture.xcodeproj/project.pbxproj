@@ -401,7 +401,7 @@
 				DEVELOPMENT_TEAM = AKXK32DN2N;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = Config/IdeaCapture-Info.plist;
+				INFOPLIST_FILE = "Config/IdeaCapture-Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -426,7 +426,7 @@
 				DEVELOPMENT_TEAM = AKXK32DN2N;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = Config/IdeaCapture-Info.plist;
+				INFOPLIST_FILE = "Config/IdeaCapture-Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

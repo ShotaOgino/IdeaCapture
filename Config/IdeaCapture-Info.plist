@@ -47,8 +47,8 @@
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 	</array>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>IdeaCapture needs microphone access to record your spoken ideas.</string>
+	<string>IdeaCapture がアイデアを録音するためにはマイクへのアクセスが必要です。</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>IdeaCapture needs speech recognition access to transcribe your ideas.</string>
+	<string>IdeaCapture が録音した音声を文字起こしするためには音声認識へのアクセスが必要です。</string>
 </dict>
 </plist>

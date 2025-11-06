@@ -23,7 +23,7 @@ struct SessionEndView: View {
                 }
 
                 // Title
-                Text("Recording Ended")
+                Text("録音を終了しました")
                     .font(.system(.title, design: .rounded))
                     .fontWeight(.bold)
                     .foregroundColor(.white)
@@ -31,7 +31,7 @@ struct SessionEndView: View {
                 // Transcript preview
                 if !transcript.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Last Transcript:")
+                        Text("最後の文字起こし")
                             .font(.system(.caption, design: .rounded))
                             .foregroundColor(.white.opacity(0.6))
 
@@ -50,7 +50,7 @@ struct SessionEndView: View {
                     .padding(.horizontal, 30)
                 }
 
-                Text("This transcript will be deleted when you close the app.")
+                Text("アプリを閉じるとこの文字起こしは削除されます。")
                     .font(.system(.caption, design: .rounded))
                     .foregroundColor(.white.opacity(0.5))
                     .multilineTextAlignment(.center)
@@ -60,7 +60,7 @@ struct SessionEndView: View {
 
                 // Done button
                 Button(action: onDismiss) {
-                    Text("Done")
+                    Text("完了")
                         .font(.system(.headline, design: .rounded))
                         .foregroundColor(.white)
                         .frame(maxWidth: .infinity)
@@ -79,7 +79,7 @@ struct SessionEndView: View {
 
 #Preview {
     SessionEndView(
-        transcript: "This is a sample transcript that will be displayed after the recording session ends. The user said finish to end the recording.",
+        transcript: "これは録音終了後に表示されるサンプルの文字起こしです。ユーザーが「終了」と話したことで録音が停止しました。",
         onDismiss: {}
     )
 }

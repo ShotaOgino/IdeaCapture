@@ -20,12 +20,16 @@ final class RecorderViewModel: ObservableObject {
     private var hasActiveTap = false
 
     init() {
-        // Initialize recognizer with device locale
-        recognizer = SFSpeechRecognizer(locale: Locale.current)
+        // Initialize recognizer for Japanese locale
+        recognizer = SFSpeechRecognizer(locale: Locale(identifier: "ja-JP"))
+        recognizer?.defaultTaskHint = .dictation
 
-        // Enable on-device recognition if available
-        if let recognizer = recognizer, recognizer.supportsOnDeviceRecognition {
-            print("On-device recognition is available")
+        if let recognizer = recognizer {
+            if recognizer.supportsOnDeviceRecognition {
+                print("オンデバイス音声認識を利用できます")
+            }
+        } else {
+            print("日本語の音声認識がサポートされていません")
         }
     }
 
@@ -50,7 +54,7 @@ final class RecorderViewModel: ObservableObject {
     func startRecording() {
         guard permissionGranted else { return }
         guard let recognizer = recognizer, recognizer.isAvailable else {
-            print("Speech recognizer not available")
+            print("音声認識を利用できません")
             return
         }
 
@@ -64,7 +68,7 @@ final class RecorderViewModel: ObservableObject {
             try audioSession.setCategory(.record, mode: .measurement, options: .duckOthers)
             try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
         } catch {
-            print("Failed to set up audio session: \(error)")
+            print("オーディオセッションの設定に失敗しました: \(error)")
             return
         }
 
@@ -101,7 +105,7 @@ final class RecorderViewModel: ObservableObject {
             try audioEngine.start()
             isRecording = true
         } catch {
-            print("Audio engine failed to start: \(error)")
+            print("オーディオエンジンの起動に失敗しました: \(error)")
             teardownRecordingResources(deleteTemporaryFile: true)
             return
         }
@@ -187,7 +191,7 @@ final class RecorderViewModel: ObservableObject {
         do {
             audioFile = try AVAudioFile(forWriting: url, settings: settings)
         } catch {
-            print("Failed to create audio file: \(error)")
+            print("一時オーディオファイルの作成に失敗しました: \(error)")
         }
     }
 
