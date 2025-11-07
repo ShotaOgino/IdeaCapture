@@ -1,8 +1,29 @@
 import SwiftUI
+import UIKit
 
 struct HistoryView: View {
     @ObservedObject var viewModel: RecorderViewModel
     @Environment(\.dismiss) private var dismiss
+    private static let sectionDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ja_JP")
+        formatter.dateStyle = .long
+        formatter.timeStyle = .none
+        return formatter
+    }()
+
+    private var groupedHistory: [(date: Date, entries: [TranscriptEntry])] {
+        let calendar = Calendar.current
+        let grouped = Dictionary(grouping: viewModel.history) { entry in
+            calendar.startOfDay(for: entry.createdAt)
+        }
+
+        return grouped
+            .map { date, entries in
+                (date: date, entries: entries.sorted(by: { $0.createdAt > $1.createdAt }))
+            }
+            .sorted(by: { $0.date > $1.date })
+    }
 
     var body: some View {
         NavigationStack {
@@ -25,28 +46,41 @@ struct HistoryView: View {
                     .background(Color(.systemGroupedBackground))
                 } else {
                     List {
-                        ForEach(viewModel.history) { entry in
-                            NavigationLink(value: entry.id) {
-                                HistoryRow(entry: entry)
-                            }
-                            .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                                Button {
-                                    viewModel.toggleReadState(for: entry)
-                                } label: {
-                                    if entry.isRead {
-                                        Label("未読にする", systemImage: "envelope.badge")
-                                    } else {
-                                        Label("既読にする", systemImage: "envelope.open")
+                        ForEach(groupedHistory, id: \.date) { section in
+                            Section {
+                                ForEach(section.entries) { entry in
+                                    NavigationLink(value: entry.id) {
+                                        HistoryRow(entry: entry)
+                                    }
+                                    .contextMenu {
+                                        Button {
+                                            UIPasteboard.general.string = entry.text
+                                        } label: {
+                                            Label("コピー", systemImage: "doc.on.doc")
+                                        }
+                                    }
+                                    .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                                        Button {
+                                            viewModel.toggleReadState(for: entry)
+                                        } label: {
+                                            if entry.isRead {
+                                                Label("未読にする", systemImage: "envelope.badge")
+                                            } else {
+                                                Label("既読にする", systemImage: "envelope.open")
+                                            }
+                                        }
+                                        .tint(entry.isRead ? .blue : .green)
+                                    }
+                                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                        Button(role: .destructive) {
+                                            viewModel.deleteEntry(entry)
+                                        } label: {
+                                            Label("削除", systemImage: "trash")
+                                        }
                                     }
                                 }
-                                .tint(entry.isRead ? .blue : .green)
-                            }
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                Button(role: .destructive) {
-                                    viewModel.deleteEntry(entry)
-                                } label: {
-                                    Label("削除", systemImage: "trash")
-                                }
+                            } header: {
+                                Text(Self.sectionDateFormatter.string(from: section.date))
                             }
                         }
                     }
@@ -140,16 +174,35 @@ private struct TranscriptDetailView: View {
                             .font(.body)
                             .foregroundColor(.primary)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            .contextMenu {
+                                Button {
+                                    UIPasteboard.general.string = entry.text
+                                } label: {
+                                    Label("コピー", systemImage: "doc.on.doc")
+                                }
+                            }
                     }
                     .padding()
                 }
                 .background(Color(.systemBackground))
-                .navigationTitle("詳細")
+                .navigationTitle("")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItemGroup(placement: .topBarTrailing) {
-                        Button(entry.isRead ? "未読にする" : "既読にする") {
+                        ShareLink(item: entry.text) {
+                            Label("シェア", systemImage: "square.and.arrow.up")
+                                .labelStyle(.iconOnly)
+                        }
+
+                        Button {
                             viewModel.toggleReadState(for: entry)
+                            dismiss()
+                        } label: {
+                            Label(
+                                entry.isRead ? "未読にする" : "既読にする",
+                                systemImage: entry.isRead ? "envelope.badge" : "envelope.open"
+                            )
+                            .labelStyle(.iconOnly)
                         }
 
                         Button(role: .destructive) {
