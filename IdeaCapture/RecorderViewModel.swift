@@ -27,6 +27,7 @@ final class RecorderViewModel: ObservableObject {
     static let pendingStartRequestKey = "PendingStartRecordingRequest"
 
     @Published var transcript: String = ""
+    @Published var reviewTranscript: String = ""
     @Published var isRecording = false
     @Published var sessionEnded = false
     @Published var audioLevel: Float = 0.0
@@ -47,13 +48,22 @@ final class RecorderViewModel: ObservableObject {
     private var hasActiveTap = false
 
     private let historyURL: URL
-    private var currentSessionEntryID: UUID?
-    private var currentSessionTranscript: String = ""
-    private var currentSessionChunks: [String] = []
+    private let transcriptsDirectoryURL: URL
+    private var lastCommittedEntryID: UUID?
+    private var awaitingFinalResult = false
+    private var pendingTeardownDeleteTemporaryFile = false
+    private var hasUncommittedTranscriptChanges = false
+    private var accumulatedTranscript: String = ""
+    private var committedText: String = ""           // 直前までのFinal確定分
+    private var currentPartialText: String = ""      // 現在の部分結果（未確定）
+    private var sessionStartDate: Date?
+    private var hasSavedSessionToFile: Bool = false
+    @Published private(set) var lastSavedTranscriptFileURL: URL?
 
-    init() {
+    init(historyURL: URL? = nil) {
         let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
-        historyURL = documentsURL.appendingPathComponent("transcripts.json")
+        self.historyURL = historyURL ?? documentsURL.appendingPathComponent("transcripts.json")
+        self.transcriptsDirectoryURL = documentsURL.appendingPathComponent("Transcripts", isDirectory: true)
 
         loadHistory()
         configureRecognizer()
@@ -77,7 +87,16 @@ final class RecorderViewModel: ObservableObject {
 
     func startRecording() {
         clearPendingStartRequestFlag()
+        guard task == nil else {
+            print("前回の音声認識がまだ終了していません")
+            return
+        }
+
         prepareForNewSession()
+        awaitingFinalResult = false
+        pendingTeardownDeleteTemporaryFile = false
+        sessionStartDate = Date()
+        hasSavedSessionToFile = false
 
         guard permissionGranted else { return }
         guard let recognizer = recognizer, recognizer.isAvailable else {
@@ -135,11 +154,15 @@ final class RecorderViewModel: ObservableObject {
                 Task { @MainActor in
                     self.handleRecognitionResult(result)
                 }
+            } else if error == nil {
+                Task { @MainActor in
+                    self.handleRecognitionCompletionIfNeeded()
+                }
             }
 
-            if error != nil {
+            if let error = error {
                 Task { @MainActor in
-                    self.stopRecording()
+                    self.handleRecognitionError(error)
                 }
             }
         }
@@ -153,12 +176,7 @@ final class RecorderViewModel: ObservableObject {
         }
 
         isRecording = false
-
-        commitCurrentTranscriptIfNeeded()
-        finishCurrentSession()
-        teardownRecordingResources(deleteTemporaryFile: false)
-
-        audioLevel = 0.0
+        requestFinalTranscription(deleteTemporaryFile: false)
     }
 
     @MainActor func cleanup() {
@@ -169,12 +187,7 @@ final class RecorderViewModel: ObservableObject {
         }
 
         isRecording = false
-
-        commitCurrentTranscriptIfNeeded()
-        finishCurrentSession()
-        teardownRecordingResources(deleteTemporaryFile: true)
-
-        audioLevel = 0.0
+        requestFinalTranscription(deleteTemporaryFile: true)
     }
 
     func markAllAsRead() {
@@ -257,15 +270,159 @@ final class RecorderViewModel: ObservableObject {
     }
 
     private func handleRecognitionResult(_ result: SFSpeechRecognitionResult) {
-        let previousTranscript = transcript
-        transcript = result.bestTranscription.formattedString
-        updateCurrentSessionChunks(with: transcript, previousTranscript: previousTranscript)
-        commitCurrentTranscriptIfNeeded()
+        let updatedTranscript = result.bestTranscription.formattedString
+        let shouldFinishSession = containsFinishKeyword(updatedTranscript) || containsFinishKeyword(in: result.bestTranscription.segments)
+        processRecognitionUpdate(transcript: updatedTranscript, isFinal: result.isFinal, shouldFinishSession: shouldFinishSession)
+    }
 
-        if containsFinishKeyword(transcript) {
-            stopRecording()
-            sessionEnded = true
+    func processRecognitionUpdate(transcript newTranscript: String, isFinal: Bool, shouldFinishSession: Bool) {
+        let textChanged = transcript != newTranscript
+        transcript = newTranscript
+
+        if textChanged {
+            hasUncommittedTranscriptChanges = true
+            let trimmed = newTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            // 以前までの全文と新しい結果をマージ
+            let previousFull = accumulatedTranscript
+            accumulatedTranscript = mergeTranscript(previousFull, trimmed)
         }
+
+        if shouldFinishSession {
+            sessionEnded = true
+            if !awaitingFinalResult {
+                stopRecording()
+            }
+        }
+
+        if isFinal {
+            // 現時点の全文を確定し、部分結果をクリア
+            committedText = accumulatedTranscript
+            currentPartialText = ""
+
+            // 次の認識のためにUI用テキストをリセット
+            transcript = ""
+            hasUncommittedTranscriptChanges = false
+
+            if awaitingFinalResult {
+                commitAccumulatedTranscript()
+                completeRecognitionSession()
+            }
+        }
+    }
+
+    // 末尾/先頭の重なりを返す（大文字小文字区別なし、最大64文字）
+    private func longestOverlapSuffixPrefix(_ a: String, _ b: String) -> Int {
+        let aNorm = a
+        let bNorm = b
+        let maxLen = min(64, min(aNorm.count, bNorm.count))
+        if maxLen == 0 { return 0 }
+        for len in stride(from: maxLen, through: 1, by: -1) {
+            let aSuffix = String(aNorm.suffix(len))
+            let bPrefix = String(bNorm.prefix(len))
+            if aSuffix.caseInsensitiveCompare(bPrefix) == .orderedSame { return len }
+        }
+        return 0
+    }
+
+    private func longestCommonPrefixLen(_ a: String, _ b: String) -> Int {
+        let aArr = Array(a)
+        let bArr = Array(b)
+        let maxLen = min(aArr.count, bArr.count)
+        var i = 0
+        while i < maxLen && aArr[i] == bArr[i] { i += 1 }
+        return i
+    }
+
+    // 以前までの全文 prev と新しい全文/セグメント new のマージ
+    // - new が prev を拡張: new を採用
+    // - prev が new を包含: 何もしない（前半が消えない）
+    // - 末尾/先頭の重なりあり: 重複を除いて結合
+    // - それ以外: 新しいセグメントとしてスペースで連結
+    // - 末尾の小規模な訂正は LCP 以降を置き換え
+    private func mergeTranscript(_ prev: String, _ new: String) -> String {
+        let p = prev.trimmingCharacters(in: .whitespacesAndNewlines)
+        let n = new.trimmingCharacters(in: .whitespacesAndNewlines)
+        if p.isEmpty { return n }
+        if n.isEmpty { return p }
+        if n.hasPrefix(p) { return n }
+        if p.hasPrefix(n) { return p }
+
+        let overlap = longestOverlapSuffixPrefix(p, n)
+        if overlap > 0 {
+            return p + String(n.dropFirst(overlap))
+        }
+
+        let lcp = longestCommonPrefixLen(p, n)
+        if lcp > 0 {
+            let prefix = String(p.prefix(lcp))
+            let nTail = String(n.dropFirst(lcp))
+            return joinWithSpace(prefix, nTail)
+        }
+
+        return joinWithSpace(p, n)
+    }
+
+    private func joinWithSpace(_ a: String, _ b: String) -> String {
+        let aT = a.trimmingCharacters(in: .whitespacesAndNewlines)
+        let bT = b.trimmingCharacters(in: .whitespacesAndNewlines)
+        if aT.isEmpty { return bT }
+        if bT.isEmpty { return aT }
+        if aT.hasSuffix(" ") || bT.hasPrefix(" ") { return aT + bT }
+        return aT + " " + bT
+    }
+
+    private func requestFinalTranscription(deleteTemporaryFile: Bool) {
+        pendingTeardownDeleteTemporaryFile = pendingTeardownDeleteTemporaryFile || deleteTemporaryFile
+
+        guard task != nil else {
+            completeRecognitionSession(forceDeleteFile: deleteTemporaryFile)
+            return
+        }
+
+        if awaitingFinalResult {
+            return
+        }
+
+        awaitingFinalResult = true
+
+        if audioEngine.isRunning {
+            audioEngine.stop()
+        }
+
+        if hasActiveTap {
+            audioEngine.inputNode.removeTap(onBus: 0)
+            hasActiveTap = false
+        }
+
+        levelTimer?.invalidate()
+        levelTimer = nil
+
+        request?.endAudio()
+        audioLevel = 0.0
+    }
+
+    private func completeRecognitionSession(forceDeleteFile: Bool? = nil) {
+        let deleteFile = forceDeleteFile ?? pendingTeardownDeleteTemporaryFile
+        pendingTeardownDeleteTemporaryFile = false
+        awaitingFinalResult = false
+        isRecording = false
+        teardownRecordingResources(deleteTemporaryFile: deleteFile)
+        audioLevel = 0.0
+        hasUncommittedTranscriptChanges = false
+    }
+
+    private func handleRecognitionCompletionIfNeeded() {
+        guard awaitingFinalResult else { return }
+        commitAccumulatedTranscript()
+        completeRecognitionSession()
+    }
+
+    private func handleRecognitionError(_ error: Error) {
+        print("音声認識中にエラーが発生しました: \(error.localizedDescription)")
+        isRecording = false
+        commitAccumulatedTranscript()
+        completeRecognitionSession()
     }
 
     private func configureRecognizer() {
@@ -306,57 +463,73 @@ final class RecorderViewModel: ObservableObject {
         }
     }
 
-    // 保存タイミング: 音声認識結果の更新時 / stopRecording / cleanup / deinit 時
-    private func commitCurrentTranscriptIfNeeded() {
-        let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+    // 保存タイミング: 音声認識最終結果 / stopRecording / cleanup / deinit 時
+    private func commitAccumulatedTranscript() {
+        let trimmed = accumulatedTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        if currentSessionChunks.isEmpty {
-            currentSessionChunks = [trimmed]
-        }
+        // セッション終了時に1つのテキストファイルへ保存
+        persistSessionTranscriptToTextFile(trimmed)
 
-        let combined = currentSessionChunks
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n")
+        // 既存のアプリUIのために履歴にも1件保存（必要に応じて維持）
+        let entry = TranscriptEntry(
+            id: UUID(),
+            createdAt: Date(),
+            text: trimmed,
+            isRead: false
+        )
+        history.insert(entry, at: 0)
 
-        guard !combined.isEmpty else { return }
-        guard combined != currentSessionTranscript else { return }
-
-        if let entryID = currentSessionEntryID,
-           let index = history.firstIndex(where: { $0.id == entryID }) {
-            history[index].text = combined
-            history[index].isRead = false
-            if index != 0 {
-                let entry = history.remove(at: index)
-                history.insert(entry, at: 0)
-            }
-        } else {
-            let entry = TranscriptEntry(
-                id: UUID(),
-                createdAt: Date(),
-                text: combined,
-                isRead: false
-            )
-            history.insert(entry, at: 0)
-            currentSessionEntryID = entry.id
-        }
-
-        currentSessionTranscript = combined
+        lastCommittedEntryID = entry.id
+        reviewTranscript = trimmed
         persistHistory()
     }
 
+    private func persistSessionTranscriptToTextFile(_ text: String) {
+        guard !hasSavedSessionToFile else { return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        // ディレクトリ作成（なければ作成）
+        do {
+            try FileManager.default.createDirectory(at: transcriptsDirectoryURL, withIntermediateDirectories: true)
+        } catch {
+            print("テキスト保存用ディレクトリの作成に失敗しました: \(error)")
+        }
+
+        // ファイル名: transcript_YYYYMMDD_HHMMSS.txt
+        let date = sessionStartDate ?? Date()
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ja_JP_POSIX")
+        formatter.dateFormat = "yyyyMMdd_HHmmss"
+        let datePart = formatter.string(from: date)
+        let fileURL = transcriptsDirectoryURL.appendingPathComponent("transcript_\(datePart).txt")
+
+        do {
+            try trimmed.data(using: .utf8)?.write(to: fileURL, options: [.atomic])
+            lastSavedTranscriptFileURL = fileURL
+            hasSavedSessionToFile = true
+        } catch {
+            print("文字起こしファイルの保存に失敗しました: \(error)")
+        }
+    }
+
+    private let finishKeywords: [String] = [
+        "finish", "finished",
+        "終わり", "おわり", "終了",
+        "terminer", "fin",
+        "끝", "종료"
+    ]
+
     private func containsFinishKeyword(_ text: String) -> Bool {
         let lowercased = text.lowercased()
-
-        let finishKeywords = [
-            "finish", "finished",
-            "終わり", "おわり", "終了",
-            "terminer", "fin",
-            "끝", "종료"
-        ]
-
         return finishKeywords.contains { lowercased.contains($0) }
+    }
+
+    private func containsFinishKeyword(in segments: [SFTranscriptionSegment]) -> Bool {
+        guard let last = segments.last else { return false }
+        let normalized = last.substring.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        return finishKeywords.contains { normalized == $0 || normalized.hasSuffix($0) }
     }
 
     private func setupAudioFile() {
@@ -405,50 +578,56 @@ final class RecorderViewModel: ObservableObject {
     }
 
     private func prepareForNewSession() {
-        currentSessionEntryID = nil
-        currentSessionTranscript = ""
-        currentSessionChunks = []
+        lastCommittedEntryID = nil
+        reviewTranscript = ""
+        hasUncommittedTranscriptChanges = false
+        accumulatedTranscript = ""
+        committedText = ""
+        currentPartialText = ""
+        lastSavedTranscriptFileURL = nil
+        sessionStartDate = nil
+        hasSavedSessionToFile = false
     }
 
-    private func finishCurrentSession() {
-        currentSessionEntryID = nil
-        currentSessionTranscript = ""
-        currentSessionChunks = []
-    }
+    func updateLastCommittedEntry(with newText: String) {
+        let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
 
-    private func updateCurrentSessionChunks(with currentTranscript: String, previousTranscript: String?) {
-        let trimmedCurrent = currentTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedCurrent.isEmpty else { return }
+        transcript = trimmed
+        reviewTranscript = trimmed
+        hasUncommittedTranscriptChanges = false
 
-        let trimmedPrevious = previousTranscript?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-        if currentSessionChunks.isEmpty {
-            currentSessionChunks = [trimmedCurrent]
-            return
-        }
-
-        if let last = currentSessionChunks.last, !trimmedPrevious.isEmpty, last == trimmedPrevious {
-            if trimmedCurrent.hasPrefix(trimmedPrevious) || trimmedPrevious.hasPrefix(trimmedCurrent) {
-                currentSessionChunks[currentSessionChunks.count - 1] = trimmedCurrent
-                return
+        if let entryID = lastCommittedEntryID,
+           let index = history.firstIndex(where: { $0.id == entryID }) {
+            history[index].text = trimmed
+            history[index].isRead = false
+            if index != 0 {
+                let entry = history.remove(at: index)
+                history.insert(entry, at: 0)
             }
-
-            if trimmedCurrent != trimmedPrevious {
-                currentSessionChunks.append(trimmedCurrent)
-                return
-            }
-        }
-
-        if trimmedPrevious.isEmpty {
-            currentSessionChunks[currentSessionChunks.count - 1] = trimmedCurrent
-            return
-        }
-
-        if let last = currentSessionChunks.last, last == trimmedPrevious {
-            currentSessionChunks.append(trimmedCurrent)
+            lastCommittedEntryID = entryID
+        } else if let firstIndex = history.indices.first {
+            history[firstIndex].text = trimmed
+            history[firstIndex].isRead = false
+            lastCommittedEntryID = history[firstIndex].id
         } else {
-            currentSessionChunks[currentSessionChunks.count - 1] = trimmedCurrent
+            let entry = TranscriptEntry(
+                id: UUID(),
+                createdAt: Date(),
+                text: trimmed,
+                isRead: false
+            )
+            history.insert(entry, at: 0)
+            lastCommittedEntryID = entry.id
         }
+
+        persistHistory()
+    }
+
+    func dismissSessionReview() {
+        sessionEnded = false
+        transcript = ""
+        reviewTranscript = ""
     }
 
     @MainActor private func teardownRecordingResources(deleteTemporaryFile: Bool) {
@@ -484,9 +663,20 @@ final class RecorderViewModel: ObservableObject {
 
     deinit {
         Task { @MainActor [self] in
-            commitCurrentTranscriptIfNeeded()
-            finishCurrentSession()
-            teardownRecordingResources(deleteTemporaryFile: true)
+            commitAccumulatedTranscript()
+            completeRecognitionSession(forceDeleteFile: true)
         }
     }
 }
+
+#if DEBUG
+extension RecorderViewModel {
+    func _testSetAwaitingFinalResult(_ value: Bool) {
+        awaitingFinalResult = value
+    }
+
+    var _testLastCommittedEntryID: UUID? {
+        lastCommittedEntryID
+    }
+}
+#endif

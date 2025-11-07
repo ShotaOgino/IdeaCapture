@@ -12,10 +12,12 @@ struct ContentView: View {
 
             if viewModel.sessionEnded {
                 SessionEndView(
-                    transcript: viewModel.transcript,
+                    reviewText: $viewModel.reviewTranscript,
+                    onSaveEdits: { updatedText in
+                        viewModel.updateLastCommittedEntry(with: updatedText)
+                    },
                     onDismiss: {
-                        viewModel.sessionEnded = false
-                        viewModel.transcript = ""
+                        viewModel.dismissSessionReview()
                     }
                 )
             } else {
@@ -185,7 +187,7 @@ struct ContentView: View {
                         )
                 }
             }
-            .allowsHitTesting(true)
+            .allowsHitTesting(!viewModel.sessionEnded)
         }
     }
 }
