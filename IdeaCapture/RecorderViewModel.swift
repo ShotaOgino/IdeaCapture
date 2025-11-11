@@ -49,6 +49,7 @@ final class RecorderViewModel: ObservableObject {
 
     private let historyURL: URL
     private let transcriptsDirectoryURL: URL
+    private var sessionTranscriptFileURL: URL?
     private var lastCommittedEntryID: UUID?
     private var awaitingFinalResult = false
     private var pendingTeardownDeleteTemporaryFile = false
@@ -58,6 +59,8 @@ final class RecorderViewModel: ObservableObject {
     private var currentPartialText: String = ""      // 現在の部分結果（未確定）
     private var sessionStartDate: Date?
     private var hasSavedSessionToFile: Bool = false
+    private var lastSavedTranscriptSnapshot: String = ""
+    private var lastSavedTranscriptFingerprint: String = ""
     @Published private(set) var lastSavedTranscriptFileURL: URL?
 
     init(historyURL: URL? = nil) {
@@ -286,6 +289,9 @@ final class RecorderViewModel: ObservableObject {
             // 以前までの全文と新しい結果をマージ
             let previousFull = accumulatedTranscript
             accumulatedTranscript = mergeTranscript(previousFull, trimmed)
+
+            // 途中経過もファイルへ保存し、同一内容はスキップ
+            persistSessionTranscriptToTextFile(accumulatedTranscript)
         }
 
         if shouldFinishSession {
@@ -334,6 +340,18 @@ final class RecorderViewModel: ObservableObject {
         return i
     }
 
+    private func longestCommonSuffixLen(_ a: String, _ b: String) -> Int {
+        let aArr = Array(a)
+        let bArr = Array(b)
+        let maxLen = min(aArr.count, bArr.count)
+        var i = 0
+        while i < maxLen &&
+            aArr[aArr.count - 1 - i] == bArr[bArr.count - 1 - i] {
+            i += 1
+        }
+        return i
+    }
+
     // 以前までの全文 prev と新しい全文/セグメント new のマージ
     // - new が prev を拡張: new を採用
     // - prev が new を包含: 何もしない（前半が消えない）
@@ -354,6 +372,11 @@ final class RecorderViewModel: ObservableObject {
         }
 
         let lcp = longestCommonPrefixLen(p, n)
+        let lcs = longestCommonSuffixLen(p, n)
+        if n.count >= p.count && (lcp + lcs) >= p.count - 2 {
+            return n
+        }
+
         if lcp > 0 {
             let prefix = String(p.prefix(lcp))
             let nTail = String(n.dropFirst(lcp))
@@ -370,6 +393,13 @@ final class RecorderViewModel: ObservableObject {
         if bT.isEmpty { return aT }
         if aT.hasSuffix(" ") || bT.hasPrefix(" ") { return aT + bT }
         return aT + " " + bT
+    }
+
+    private func canonicalSnapshot(from text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let components = trimmed.components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+        return components.joined(separator: " ")
     }
 
     private func requestFinalTranscription(deleteTemporaryFile: Bool) {
@@ -486,9 +516,10 @@ final class RecorderViewModel: ObservableObject {
     }
 
     private func persistSessionTranscriptToTextFile(_ text: String) {
-        guard !hasSavedSessionToFile else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        let canonical = canonicalSnapshot(from: trimmed)
+        guard canonical != lastSavedTranscriptFingerprint else { return }
 
         // ディレクトリ作成（なければ作成）
         do {
@@ -497,16 +528,25 @@ final class RecorderViewModel: ObservableObject {
             print("テキスト保存用ディレクトリの作成に失敗しました: \(error)")
         }
 
-        // ファイル名: transcript_YYYYMMDD_HHMMSS.txt
-        let date = sessionStartDate ?? Date()
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "ja_JP_POSIX")
-        formatter.dateFormat = "yyyyMMdd_HHmmss"
-        let datePart = formatter.string(from: date)
-        let fileURL = transcriptsDirectoryURL.appendingPathComponent("transcript_\(datePart).txt")
+        let fileURL: URL
+        if let existingURL = sessionTranscriptFileURL {
+            fileURL = existingURL
+        } else {
+            // ファイル名: transcript_YYYYMMDD_HHMMSS.txt
+            let date = sessionStartDate ?? Date()
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "ja_JP_POSIX")
+            formatter.dateFormat = "yyyyMMdd_HHmmss"
+            let datePart = formatter.string(from: date)
+            let generatedURL = transcriptsDirectoryURL.appendingPathComponent("transcript_\(datePart).txt")
+            sessionTranscriptFileURL = generatedURL
+            fileURL = generatedURL
+        }
 
         do {
             try trimmed.data(using: .utf8)?.write(to: fileURL, options: [.atomic])
+            lastSavedTranscriptSnapshot = trimmed
+            lastSavedTranscriptFingerprint = canonical
             lastSavedTranscriptFileURL = fileURL
             hasSavedSessionToFile = true
         } catch {
@@ -587,6 +627,9 @@ final class RecorderViewModel: ObservableObject {
         lastSavedTranscriptFileURL = nil
         sessionStartDate = nil
         hasSavedSessionToFile = false
+        sessionTranscriptFileURL = nil
+        lastSavedTranscriptSnapshot = ""
+        lastSavedTranscriptFingerprint = ""
     }
 
     func updateLastCommittedEntry(with newText: String) {
